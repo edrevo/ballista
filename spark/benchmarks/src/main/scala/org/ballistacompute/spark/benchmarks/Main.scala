@@ -14,7 +14,27 @@
 
 package org.ballistacompute.spark.benchmarks
 
-import org.ballistacompute.spark.benchmarks.nyctaxi.Benchmarks
+import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
+import org.ballistacompute.spark.benchmarks.tpch.Tpch
+import org.rogach.scallop.{ScallopConf, Subcommand}
+
+class Conf(args: Array[String]) extends ScallopConf(args) {
+  val convertTpch = new Subcommand("convert-tpch") {
+    val inputPath = opt[String]()
+    val inputFormat = opt[String]()
+    val outputPath = opt[String]()
+    val outputFormat = opt[String]()
+    val partitions = opt[Int](required = true)
+  }
+  val tpch = new Subcommand("tpch") {
+    val inputPath = opt[String]()
+    val inputFormat = opt[String]()
+    val query = opt[String]()
+  }
+  addSubcommand(convertTpch)
+  addSubcommand(tpch)
+  verify()
+}
 
 /**
   * This benchmark is designed to be called as a Docker container.
@@ -22,15 +42,64 @@ import org.ballistacompute.spark.benchmarks.nyctaxi.Benchmarks
 object Main {
 
   def main(args: Array[String]): Unit = {
+    val conf = new Conf(args)
 
-    val format = sys.env("BENCH_FORMAT")
-    val path = sys.env("BENCH_PATH")
-    val sql = sys.env("BENCH_SQL")
-    val resultFile = sys.env("BENCH_RESULT_FILE")
-    val iterations = sys.env("BENCH_ITERATIONS").toInt
+    val spark: SparkSession = SparkSession.builder
+      .appName("Ballista Spark Benchmarks")
+      .master("local[*]")
+      .getOrCreate()
 
-    Benchmarks.run(format, path, sql, iterations, resultFile)
+    conf.subcommand match {
+      case Some(conf.tpch) =>
+        val df = readLineitem(conf, spark)
+        df.createTempView("lineitem")
+        val sql = Tpch.query(conf.tpch.query())
+        val resultDf = spark.sql(sql)
+        resultDf.show()
 
+      case Some(conf.`convertTpch`) =>
+        val df = readLineitem(conf, spark)
+
+        conf.convertTpch.outputFormat() match {
+          case "parquet" =>
+            df.repartition(conf.convertTpch.partitions())
+              .write
+              .mode(SaveMode.Overwrite)
+              .parquet(conf.convertTpch.outputPath())
+          case "csv" =>
+            df.repartition(conf.convertTpch.partitions())
+              .write
+              .mode(SaveMode.Overwrite)
+              .csv(conf.convertTpch.outputPath())
+          case _ =>
+            throw new IllegalArgumentException("unsupported output format")
+        }
+
+      case _ =>
+        throw new IllegalArgumentException("no subcommand specified")
+    }
   }
 
+  private def readLineitem(conf: Conf, spark: SparkSession): DataFrame = {
+    conf.convertTpch.inputFormat() match {
+      case "tbl" =>
+        spark.read
+          .option("header", "false")
+          .option("inferSchema", "false")
+          .option("delimiter", "|")
+          .schema(Tpch.LINEITEM_SCHEMA)
+          .csv(conf.convertTpch.inputPath())
+      case "csv" =>
+        spark.read
+          .option("header", "false")
+          .option("inferSchema", "false")
+          .schema(Tpch.LINEITEM_SCHEMA)
+          .csv(conf.convertTpch.inputPath())
+      case "parquet" =>
+        spark.read
+          .parquet(conf.convertTpch.inputPath())
+      case _ =>
+        throw new IllegalArgumentException("unsupported input format")
+    }
+  }
 }
