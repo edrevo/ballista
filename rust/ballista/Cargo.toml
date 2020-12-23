@@ -7,8 +7,7 @@ homepage = "https://github.com/ballista-compute/ballista"
 repository = "https://github.com/ballista-compute/ballista"
 authors = ["Andy Grove <andygrove73@gmail.com>"]
 edition = "2018"
-build = "build.rs"
-include = ["build.rs", "src/**/*", "Cargo.toml", "proto/ballista.proto"]
+include = ["src/**/*", "Cargo.toml"]
 
 [dependencies]
 env_logger = { version = "0.6", default-features = false }
@@ -32,6 +31,8 @@ structopt = "0.3"
 etcd-client = "0.5"
 fnv = "1.0.7"
 
+ballista-proto = { path = "../proto", version = "0.4.0-SNAPSHOT" }
+
 arrow = { git = "https://github.com/apache/arrow", rev = "3cb0bd82"}
 arrow-flight = { git = "https://github.com/apache/arrow", rev = "3cb0bd82" }
 datafusion = { git = "https://github.com/apache/arrow", rev = "3cb0bd82" }
@@ -40,9 +41,6 @@ parquet = { git = "https://github.com/apache/arrow", rev = "3cb0bd82" }
 [[bin]]
 name = "executor"
 path = "src/bin/executor.rs"
-
-[build-dependencies]
-prost-build = { version = "0.6.1" }
 
 [dev-dependencies]
 criterion = "0.3"
