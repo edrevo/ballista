@@ -1,0 +1,18 @@
+[package]
+name = "ballista-proto"
+description = "Ballista protobuf-generated code"
+license = "Apache-2.0"
+version = "0.4.0-SNAPSHOT"
+homepage = "https://github.com/ballista-compute/ballista"
+repository = "https://github.com/ballista-compute/ballista"
+authors = ["Andy Grove <andygrove73@gmail.com>"]
+edition = "2018"
+build = "build.rs"
+include = ["build.rs", "src/**/*", "Cargo.toml", "proto/ballista.proto"]
+
+[dependencies]
+prost = "0.6"
+prost-types = "0.6"
+
+[build-dependencies]
+prost-build = { version = "0.6" }
