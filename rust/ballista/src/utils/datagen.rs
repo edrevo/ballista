@@ -19,7 +19,7 @@ use std::sync::Arc;
 use crate::arrow::array::{self, ArrayRef};
 use crate::arrow::datatypes::{DataType, Schema};
 use crate::error::Result;
-use crate::execution::physical_plan::ColumnarBatch;
+// use crate::physical_plan::ColumnarBatch;
 
 use arrow::record_batch::RecordBatch;
 use random_fast_rng::{FastRng, Random};

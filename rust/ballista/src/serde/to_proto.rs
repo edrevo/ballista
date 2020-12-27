@@ -17,51 +17,54 @@
 use std::convert::TryInto;
 
 use crate::arrow::datatypes::{DataType, Schema};
-use crate::datafusion::logicalplan::{Expr, LogicalPlan, ScalarValue};
-use crate::distributed::scheduler::ExecutionTask;
+use crate::datafusion::logical_plan::{Expr, LogicalPlan};
+use crate::datafusion::scalar::ScalarValue;
+// use crate::distributed::scheduler::ExecutionTask;
 use crate::error::BallistaError;
-use crate::execution::physical_plan::{Action, ExecutionPlan, ShuffleId};
-use crate::execution::physical_plan::{AggregateMode, PhysicalPlan};
+// use crate::execution::physical_plan::{Action, ExecutionPlan, ShuffleId};
+// use crate::execution::physical_plan::{AggregateMode, PhysicalPlan};
 use crate::protobuf;
+use crate::serde::from_proto::PhysicalPlan;
+use datafusion::physical_plan::hash_aggregate::AggregateMode;
 
-impl TryInto<protobuf::Action> for &Action {
-    type Error = BallistaError;
-
-    fn try_into(self) -> Result<protobuf::Action, Self::Error> {
-        match self {
-            Action::InteractiveQuery { ref plan, settings } => {
-                let plan_proto: protobuf::LogicalPlanNode = plan.try_into()?;
-
-                let settings = settings
-                    .iter()
-                    .map(|e| protobuf::KeyValuePair {
-                        key: e.0.to_string(),
-                        value: e.1.to_string(),
-                    })
-                    .collect();
-
-                Ok(protobuf::Action {
-                    query: Some(plan_proto),
-                    task: None,
-                    fetch_shuffle: None,
-                    settings,
-                })
-            }
-            Action::Execute(task) => Ok(protobuf::Action {
-                query: None,
-                task: Some(task.try_into()?),
-                fetch_shuffle: None,
-                settings: vec![],
-            }),
-            Action::FetchShuffle(shuffle_id) => Ok(protobuf::Action {
-                query: None,
-                task: None,
-                fetch_shuffle: Some(shuffle_id.try_into()?),
-                settings: vec![],
-            }),
-        }
-    }
-}
+// impl TryInto<protobuf::Action> for &Action {
+//     type Error = BallistaError;
+//
+//     fn try_into(self) -> Result<protobuf::Action, Self::Error> {
+//         match self {
+//             Action::InteractiveQuery { ref plan, settings } => {
+//                 let plan_proto: protobuf::LogicalPlanNode = plan.try_into()?;
+//
+//                 let settings = settings
+//                     .iter()
+//                     .map(|e| protobuf::KeyValuePair {
+//                         key: e.0.to_string(),
+//                         value: e.1.to_string(),
+//                     })
+//                     .collect();
+//
+//                 Ok(protobuf::Action {
+//                     query: Some(plan_proto),
+//                     task: None,
+//                     fetch_shuffle: None,
+//                     settings,
+//                 })
+//             }
+//             Action::Execute(task) => Ok(protobuf::Action {
+//                 query: None,
+//                 task: Some(task.try_into()?),
+//                 fetch_shuffle: None,
+//                 settings: vec![],
+//             }),
+//             Action::FetchShuffle(shuffle_id) => Ok(protobuf::Action {
+//                 query: None,
+//                 task: None,
+//                 fetch_shuffle: Some(shuffle_id.try_into()?),
+//                 settings: vec![],
+//             }),
+//         }
+//     }
+// }
 
 impl TryInto<protobuf::Schema> for &Schema {
     type Error = BallistaError;
@@ -459,46 +462,46 @@ impl TryInto<protobuf::PhysicalPlanNode> for &PhysicalPlan {
     }
 }
 
-impl TryInto<protobuf::ShuffleId> for &ShuffleId {
-    type Error = BallistaError;
-
-    fn try_into(self) -> Result<protobuf::ShuffleId, Self::Error> {
-        Ok(protobuf::ShuffleId {
-            job_uuid: self.job_uuid.to_string(),
-            stage_id: self.stage_id as u32,
-            partition_id: self.partition_id as u32,
-        })
-    }
-}
-
-impl TryInto<protobuf::Task> for &ExecutionTask {
-    type Error = BallistaError;
-
-    fn try_into(self) -> Result<protobuf::Task, Self::Error> {
-        let mut shuffle_loc = vec![];
-
-        for (k, v) in &self.shuffle_locations {
-            shuffle_loc.push(protobuf::ShuffleLocation {
-                job_uuid: k.job_uuid.to_string(),
-                stage_id: k.stage_id as u32,
-                partition_id: k.partition_id as u32,
-                executor_id: v.id.to_string(),
-                executor_host: v.host.to_string(),
-                executor_port: v.port as u32,
-            });
-        }
-
-        let plan = &self.plan;
-        Ok(protobuf::Task {
-            job_uuid: self.job_uuid.to_string(),
-            stage_id: self.stage_id as u32,
-            partition_id: self.partition_id as u32,
-            task_id: 0,
-            plan: Some(plan.try_into()?),
-            shuffle_loc,
-        })
-    }
-}
+// impl TryInto<protobuf::ShuffleId> for &ShuffleId {
+//     type Error = BallistaError;
+//
+//     fn try_into(self) -> Result<protobuf::ShuffleId, Self::Error> {
+//         Ok(protobuf::ShuffleId {
+//             job_uuid: self.job_uuid.to_string(),
+//             stage_id: self.stage_id as u32,
+//             partition_id: self.partition_id as u32,
+//         })
+//     }
+// }
+//
+// impl TryInto<protobuf::Task> for &ExecutionTask {
+//     type Error = BallistaError;
+//
+//     fn try_into(self) -> Result<protobuf::Task, Self::Error> {
+//         let mut shuffle_loc = vec![];
+//
+//         for (k, v) in &self.shuffle_locations {
+//             shuffle_loc.push(protobuf::ShuffleLocation {
+//                 job_uuid: k.job_uuid.to_string(),
+//                 stage_id: k.stage_id as u32,
+//                 partition_id: k.partition_id as u32,
+//                 executor_id: v.id.to_string(),
+//                 executor_host: v.host.to_string(),
+//                 executor_port: v.port as u32,
+//             });
+//         }
+//
+//         let plan = &self.plan;
+//         Ok(protobuf::Task {
+//             job_uuid: self.job_uuid.to_string(),
+//             stage_id: self.stage_id as u32,
+//             partition_id: self.partition_id as u32,
+//             task_id: 0,
+//             plan: Some(plan.try_into()?),
+//             shuffle_loc,
+//         })
+//     }
+// }
 
 /// Create an empty ExprNode
 fn empty_expr_node() -> protobuf::LogicalExprNode {

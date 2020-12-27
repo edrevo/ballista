@@ -18,20 +18,27 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
 
-use crate::arrow::datatypes::{DataType, Field, Schema};
-use crate::datafusion::execution::physical_plan::csv::CsvReadOptions;
-use crate::datafusion::logicalplan::{
-    Expr, LogicalPlan, LogicalPlanBuilder, Operator, ScalarValue,
-};
-use crate::distributed::scheduler::ExecutionTask;
+use arrow::datatypes::{DataType, Field, Schema};
+
+use datafusion::logical_plan::{Expr, LogicalPlan, LogicalPlanBuilder, Operator};
+use datafusion::physical_plan::csv::{CsvExec, CsvReadOptions};
+use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::hash_aggregate::{AggregateMode, HashAggregateExec};
+use datafusion::physical_plan::parquet::ParquetExec;
+use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::scalar::ScalarValue;
+
+// use crate::distributed::scheduler::ExecutionTask;
 use crate::error::{ballista_error, BallistaError};
-use crate::execution::operators::{
-    CsvScanExec, FilterExec, HashAggregateExec, ParquetScanExec, ProjectionExec, ShuffleReaderExec,
-};
-use crate::execution::physical_plan::{Action, ExecutorMeta, ShuffleId, ShuffleLocation};
-use crate::execution::physical_plan::{AggregateMode, PhysicalPlan};
+// use crate::execution::operators::{
+//     CsvScanExec, FilterExec, HashAggregateExec, ParquetScanExec, ProjectionExec, ShuffleReaderExec,
+// };
+// use crate::execution::physical_plan::{Action, ExecutorMeta, ShuffleId, ShuffleLocation};
+// use crate::execution::physical_plan::{AggregateMode, PhysicalPlan};
 use crate::protobuf;
 
+use datafusion::physical_plan::aggregates::AggregateFunction;
 use uuid::Uuid;
 
 macro_rules! convert_required {
@@ -141,94 +148,96 @@ impl TryInto<Expr> for &protobuf::LogicalExprNode {
     type Error = BallistaError;
 
     fn try_into(self) -> Result<Expr, Self::Error> {
-        if let Some(binary_expr) = &self.binary_expr {
-            Ok(Expr::BinaryExpr {
-                left: Box::new(parse_required_expr(&binary_expr.l)?),
-                op: from_proto_binary_op(&binary_expr.op)?,
-                right: Box::new(parse_required_expr(&binary_expr.r)?),
-            })
-        } else if self.has_column_name {
-            Ok(Expr::Column(self.column_name.clone()))
-        } else if self.has_literal_string {
-            Ok(Expr::Literal(ScalarValue::Utf8(
-                self.literal_string.clone(),
-            )))
-        } else if self.has_literal_f32 {
-            Ok(Expr::Literal(ScalarValue::Float32(self.literal_f32)))
-        } else if self.has_literal_f64 {
-            Ok(Expr::Literal(ScalarValue::Float64(self.literal_f64)))
-        } else if self.has_literal_i8 {
-            Ok(Expr::Literal(ScalarValue::Int8(self.literal_int as i8)))
-        } else if self.has_literal_i16 {
-            Ok(Expr::Literal(ScalarValue::Int16(self.literal_int as i16)))
-        } else if self.has_literal_i32 {
-            Ok(Expr::Literal(ScalarValue::Int32(self.literal_int as i32)))
-        } else if self.has_literal_i64 {
-            Ok(Expr::Literal(ScalarValue::Int64(self.literal_int as i64)))
-        } else if self.has_literal_u8 {
-            Ok(Expr::Literal(ScalarValue::UInt8(self.literal_uint as u8)))
-        } else if self.has_literal_u16 {
-            Ok(Expr::Literal(ScalarValue::UInt16(self.literal_uint as u16)))
-        } else if self.has_literal_u32 {
-            Ok(Expr::Literal(ScalarValue::UInt32(self.literal_uint as u32)))
-        } else if self.has_literal_u64 {
-            Ok(Expr::Literal(ScalarValue::UInt64(self.literal_uint as u64)))
-        } else if let Some(aggregate_expr) = &self.aggregate_expr {
-            let name = match aggregate_expr.aggr_function {
-                f if f == protobuf::AggregateFunction::Min as i32 => Ok("MIN"),
-                f if f == protobuf::AggregateFunction::Max as i32 => Ok("MAX"),
-                f if f == protobuf::AggregateFunction::Sum as i32 => Ok("SUM"),
-                f if f == protobuf::AggregateFunction::Avg as i32 => Ok("AVG"),
-                f if f == protobuf::AggregateFunction::Count as i32 => Ok("COUNT"),
-                other => Err(ballista_error(&format!(
-                    "Unsupported aggregate function '{:?}'",
-                    other
-                ))),
-            }?;
-
-            Ok(Expr::AggregateFunction {
-                name: name.to_owned(),
-                args: vec![parse_required_expr(&aggregate_expr.expr)?],
-            })
-        } else if let Some(alias) = &self.alias {
-            Ok(Expr::Alias(
-                Box::new(parse_required_expr(&alias.expr)?),
-                alias.alias.clone(),
-            ))
-        } else {
-            Err(ballista_error(&format!(
-                "Unsupported logical expression '{:?}'",
-                self
-            )))
-        }
+        // if let Some(binary_expr) = &self.binary_expr {
+        //     Ok(Expr::BinaryExpr {
+        //         left: Box::new(parse_required_expr(&binary_expr.l)?),
+        //         op: from_proto_binary_op(&binary_expr.op)?,
+        //         right: Box::new(parse_required_expr(&binary_expr.r)?),
+        //     })
+        // } else if self.has_column_name {
+        //     Ok(Expr::Column(self.column_name.clone()))
+        // } else if self.has_literal_string {
+        //     Ok(Expr::Literal(ScalarValue::Utf8(
+        //         Some(self.literal_string.clone()),
+        //     )))
+        // } else if self.has_literal_f32 {
+        //     Ok(Expr::Literal(ScalarValue::Float32(Some(self.literal_f32))))
+        // } else if self.has_literal_f64 {
+        //     Ok(Expr::Literal(ScalarValue::Float64(Some(self.literal_f64))))
+        // } else if Some(self.has_literal_i8 {
+        //     Ok(Expr::Literal(ScalarValue::Int8(Some(self.literal_int as i8))))
+        // } else if Some(self.has_literal_i16 {
+        //     Ok(Expr::Literal(ScalarValue::Int16(Some(self.literal_int as i16))))
+        // } else if Some(self.has_literal_i32 {
+        //     Ok(Expr::Literal(ScalarValue::Int32(Some(self.literal_int as i32))))
+        // } else if Some(self.has_literal_i64 {
+        //     Ok(Expr::Literal(ScalarValue::Int64(Some(self.literal_int as i64))))
+        // } else if Some(self.has_literal_u8 {
+        //     Ok(Expr::Literal(ScalarValue::UInt8(Some(self.literal_uint as u8))))
+        // } else if Some(self.has_literal_u16 {
+        //     Ok(Expr::Literal(ScalarValue::UInt16(Some(self.literal_uint as u16))))
+        // } else if Some(self.has_literal_u32 {
+        //     Ok(Expr::Literal(ScalarValue::UInt32(Some(self.literal_uint as u32))))
+        // } else if Some(self.has_literal_u64 {
+        //     Ok(Expr::Literal(ScalarValue::UInt64(Some(self.literal_uint as u64))))
+        // } else if let Some(aggregate_expr) = &self.aggregate_expr {
+        //     let name = match aggregate_expr.aggr_function {
+        //         f if f == protobuf::AggregateFunction::Min as i32 => Ok("MIN"),
+        //         f if f == protobuf::AggregateFunction::Max as i32 => Ok("MAX"),
+        //         f if f == protobuf::AggregateFunction::Sum as i32 => Ok("SUM"),
+        //         f if f == protobuf::AggregateFunction::Avg as i32 => Ok("AVG"),
+        //         f if f == protobuf::AggregateFunction::Count as i32 => Ok("COUNT"),
+        //         other => Err(ballista_error(&format!(
+        //             "Unsupported aggregate function '{:?}'",
+        //             other
+        //         ))),
+        //     }?;
+        //
+        //     Ok(Expr::AggregateFunction {
+        //         fun: AggregateFunction::Count, //TODO
+        //         args: vec![parse_required_expr(&aggregate_expr.expr)?],
+        //         distinct: false
+        //     })
+        // } else if let Some(alias) = &self.alias {
+        //     Ok(Expr::Alias(
+        //         Box::new(parse_required_expr(&alias.expr)?),
+        //         alias.alias.clone(),
+        //     ))
+        // } else {
+        //     Err(ballista_error(&format!(
+        //         "Unsupported logical expression '{:?}'",
+        //         self
+        //     )))
+        // }
+        unimplemented!()
     }
 }
 
-impl TryInto<Action> for &protobuf::Action {
-    type Error = BallistaError;
-
-    fn try_into(self) -> Result<Action, Self::Error> {
-        if self.query.is_some() {
-            let plan: LogicalPlan = convert_required!(self.query)?;
-            let mut settings = HashMap::new();
-            for setting in &self.settings {
-                settings.insert(setting.key.to_owned(), setting.value.to_owned());
-            }
-            Ok(Action::InteractiveQuery { plan, settings })
-        } else if self.task.is_some() {
-            let task: ExecutionTask = convert_required!(self.task)?;
-            Ok(Action::Execute(task))
-        } else if self.fetch_shuffle.is_some() {
-            let shuffle_id: ShuffleId = convert_required!(self.fetch_shuffle)?;
-            Ok(Action::FetchShuffle(shuffle_id))
-        } else {
-            Err(BallistaError::NotImplemented(format!(
-                "from_proto(Action) {:?}",
-                self
-            )))
-        }
-    }
-}
+// impl TryInto<Action> for &protobuf::Action {
+//     type Error = BallistaError;
+//
+//     fn try_into(self) -> Result<Action, Self::Error> {
+//         if self.query.is_some() {
+//             let plan: LogicalPlan = convert_required!(self.query)?;
+//             let mut settings = HashMap::new();
+//             for setting in &self.settings {
+//                 settings.insert(setting.key.to_owned(), setting.value.to_owned());
+//             }
+//             Ok(Action::InteractiveQuery { plan, settings })
+//         } else if self.task.is_some() {
+//             let task: ExecutionTask = convert_required!(self.task)?;
+//             Ok(Action::Execute(task))
+//         } else if self.fetch_shuffle.is_some() {
+//             let shuffle_id: ShuffleId = convert_required!(self.fetch_shuffle)?;
+//             Ok(Action::FetchShuffle(shuffle_id))
+//         } else {
+//             Err(BallistaError::NotImplemented(format!(
+//                 "from_proto(Action) {:?}",
+//                 self
+//             )))
+//         }
+//     }
+// }
 
 fn from_proto_binary_op(op: &str) -> Result<Operator, BallistaError> {
     match op {
@@ -269,56 +278,56 @@ fn from_proto_arrow_type(dt: i32) -> Result<DataType, BallistaError> {
     }
 }
 
-impl TryInto<ExecutionTask> for &protobuf::Task {
-    type Error = BallistaError;
-
-    fn try_into(self) -> Result<ExecutionTask, Self::Error> {
-        let mut shuffle_locations: HashMap<ShuffleId, ExecutorMeta> = HashMap::new();
-        for loc in &self.shuffle_loc {
-            let shuffle_id = ShuffleId::new(
-                Uuid::parse_str(&loc.job_uuid).expect("error parsing uuid in from_proto"),
-                loc.stage_id as usize,
-                loc.partition_id as usize,
-            );
-
-            let exec = ExecutorMeta {
-                id: loc.executor_id.to_owned(),
-                host: loc.executor_host.to_owned(),
-                port: loc.executor_port as usize,
-            };
-
-            shuffle_locations.insert(shuffle_id, exec);
-        }
-
-        Ok(ExecutionTask::new(
-            Uuid::parse_str(&self.job_uuid).expect("error parsing uuid in from_proto"),
-            self.stage_id as usize,
-            self.partition_id as usize,
-            convert_required!(self.plan)?,
-            shuffle_locations,
-        ))
-    }
-}
-
-impl TryInto<ShuffleLocation> for &protobuf::ShuffleLocation {
-    type Error = BallistaError;
-
-    fn try_into(self) -> Result<ShuffleLocation, Self::Error> {
-        Ok(ShuffleLocation {}) //TODO why empty?
-    }
-}
-
-impl TryInto<ShuffleId> for &protobuf::ShuffleId {
-    type Error = BallistaError;
-
-    fn try_into(self) -> Result<ShuffleId, Self::Error> {
-        Ok(ShuffleId::new(
-            Uuid::parse_str(&self.job_uuid).expect("error parsing uuid in from_proto"),
-            self.stage_id as usize,
-            self.partition_id as usize,
-        ))
-    }
-}
+// impl TryInto<ExecutionTask> for &protobuf::Task {
+//     type Error = BallistaError;
+//
+//     fn try_into(self) -> Result<ExecutionTask, Self::Error> {
+//         let mut shuffle_locations: HashMap<ShuffleId, ExecutorMeta> = HashMap::new();
+//         for loc in &self.shuffle_loc {
+//             let shuffle_id = ShuffleId::new(
+//                 Uuid::parse_str(&loc.job_uuid).expect("error parsing uuid in from_proto"),
+//                 loc.stage_id as usize,
+//                 loc.partition_id as usize,
+//             );
+//
+//             let exec = ExecutorMeta {
+//                 id: loc.executor_id.to_owned(),
+//                 host: loc.executor_host.to_owned(),
+//                 port: loc.executor_port as usize,
+//             };
+//
+//             shuffle_locations.insert(shuffle_id, exec);
+//         }
+//
+//         Ok(ExecutionTask::new(
+//             Uuid::parse_str(&self.job_uuid).expect("error parsing uuid in from_proto"),
+//             self.stage_id as usize,
+//             self.partition_id as usize,
+//             convert_required!(self.plan)?,
+//             shuffle_locations,
+//         ))
+//     }
+// }
+//
+// impl TryInto<ShuffleLocation> for &protobuf::ShuffleLocation {
+//     type Error = BallistaError;
+//
+//     fn try_into(self) -> Result<ShuffleLocation, Self::Error> {
+//         Ok(ShuffleLocation {}) //TODO why empty?
+//     }
+// }
+//
+// impl TryInto<ShuffleId> for &protobuf::ShuffleId {
+//     type Error = BallistaError;
+//
+//     fn try_into(self) -> Result<ShuffleId, Self::Error> {
+//         Ok(ShuffleId::new(
+//             Uuid::parse_str(&self.job_uuid).expect("error parsing uuid in from_proto"),
+//             self.stage_id as usize,
+//             self.partition_id as usize,
+//         ))
+//     }
+// }
 
 impl TryInto<Schema> for &protobuf::Schema {
     type Error = BallistaError;
@@ -336,6 +345,20 @@ impl TryInto<Schema> for &protobuf::Schema {
     }
 }
 
+pub enum PhysicalPlan {
+    Projection(Arc<dyn ExecutionPlan>),
+    Filter(Arc<dyn ExecutionPlan>),
+}
+
+impl PhysicalPlan {
+    fn plan(&self) -> Arc<dyn ExecutionPlan> {
+        match self {
+            PhysicalPlan::Projection(plan) => plan.clone(),
+            PhysicalPlan::Filter(plan) => plan.clone(),
+        }
+    }
+}
+
 impl TryInto<PhysicalPlan> for &protobuf::PhysicalPlanNode {
     type Error = BallistaError;
 
@@ -345,8 +368,9 @@ impl TryInto<PhysicalPlan> for &protobuf::PhysicalPlanNode {
             match selection.expr {
                 Some(ref protobuf_expr) => {
                     let expr: Expr = protobuf_expr.try_into()?;
-                    Ok(PhysicalPlan::Filter(Arc::new(FilterExec::new(
-                        &input, &expr,
+                    Ok(PhysicalPlan::Filter(Arc::new(FilterExec::try_new(
+                        Arc::new(expr),
+                        input.plan(),
                     ))))
                 }
                 _ => Err(ballista_error("from_proto: Selection expr missing")),
@@ -399,9 +423,8 @@ impl TryInto<PhysicalPlan> for &protobuf::PhysicalPlanNode {
                         .has_header(scan.has_header);
                     let projection = scan.projection.iter().map(|n| *n as usize).collect();
 
-                    Ok(PhysicalPlan::CsvScan(Arc::new(CsvScanExec::try_new(
+                    Ok(PhysicalPlan::CsvScan(Arc::new(CsvExec::try_new(
                         &scan.path,
-                        scan.filename.clone(),
                         options,
                         Some(projection),
                         scan.batch_size as usize,
@@ -410,12 +433,10 @@ impl TryInto<PhysicalPlan> for &protobuf::PhysicalPlanNode {
                 "parquet" => {
                     let schema: Schema = convert_required!(scan.schema)?;
                     Ok(PhysicalPlan::ParquetScan(Arc::new(
-                        ParquetScanExec::try_new(
+                        ParquetExec::try_from_path(
                             &scan.path,
-                            scan.filename.clone(),
                             Some(scan.projection.iter().map(|n| *n as usize).collect()),
                             scan.batch_size as usize,
-                            Some(schema),
                         )?,
                     )))
                 }
@@ -424,17 +445,17 @@ impl TryInto<PhysicalPlan> for &protobuf::PhysicalPlanNode {
                     other
                 ))),
             }
-        } else if let Some(shuffle_reader) = &self.shuffle_reader {
-            let mut shuffle_ids = vec![];
-            for s in &shuffle_reader.shuffle_id {
-                shuffle_ids.push(s.try_into()?);
-            }
-            Ok(PhysicalPlan::ShuffleReader(Arc::new(
-                ShuffleReaderExec::new(
-                    Arc::new(convert_required!(shuffle_reader.schema)?),
-                    shuffle_ids,
-                ),
-            )))
+        // } else if let Some(shuffle_reader) = &self.shuffle_reader {
+        //     let mut shuffle_ids = vec![];
+        //     for s in &shuffle_reader.shuffle_id {
+        //         shuffle_ids.push(s.try_into()?);
+        //     }
+        //     Ok(PhysicalPlan::ShuffleReader(Arc::new(
+        //         ShuffleReaderExec::new(
+        //             Arc::new(convert_required!(shuffle_reader.schema)?),
+        //             shuffle_ids,
+        //         ),
+        //     )))
         } else {
             Err(ballista_error(&format!(
                 "Unsupported physical plan '{:?}'",

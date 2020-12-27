@@ -17,7 +17,7 @@
 //! which is why protocol buffers was chosen for all communication between processes.
 
 use crate::error::BallistaError;
-use crate::execution::physical_plan::Action;
+// use crate::physical_plan::Action;
 use crate::protobuf;
 
 use prost::Message;
@@ -28,107 +28,107 @@ use std::io::Cursor;
 pub mod from_proto;
 pub mod to_proto;
 
-pub fn decode_protobuf(bytes: &[u8]) -> Result<Action, BallistaError> {
-    let mut buf = Cursor::new(bytes);
-    protobuf::Action::decode(&mut buf)
-        .map_err(|e| BallistaError::General(format!("{:?}", e)))
-        .and_then(|node| (&node).try_into())
-}
+// pub fn decode_protobuf(bytes: &[u8]) -> Result<Action, BallistaError> {
+//     let mut buf = Cursor::new(bytes);
+//     protobuf::Action::decode(&mut buf)
+//         .map_err(|e| BallistaError::General(format!("{:?}", e)))
+//         .and_then(|node| (&node).try_into())
+// }
 
 #[cfg(test)]
 mod tests {
     use crate::arrow::datatypes::{DataType, Field, Schema};
-    use crate::datafusion::execution::physical_plan::csv::CsvReadOptions;
-    use crate::datafusion::logicalplan::{col, lit, Expr, LogicalPlanBuilder};
+    use crate::datafusion::logical_plan::{col, lit, Expr, LogicalPlanBuilder};
+    use crate::datafusion::physical_plan::csv::CsvReadOptions;
     use crate::error::Result;
-    use crate::execution::physical_plan::Action;
+    // use crate::execution::physical_plan::Action;
     use crate::protobuf;
     use std::collections::HashMap;
     use std::convert::TryInto;
 
-    #[test]
-    fn roundtrip() -> Result<()> {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("first_name", DataType::Utf8, false),
-            Field::new("last_name", DataType::Utf8, false),
-            Field::new("state", DataType::Utf8, false),
-            Field::new("salary", DataType::Int32, false),
-        ]);
+    // #[test]
+    // fn roundtrip() -> Result<()> {
+    //     let schema = Schema::new(vec![
+    //         Field::new("id", DataType::Int32, false),
+    //         Field::new("first_name", DataType::Utf8, false),
+    //         Field::new("last_name", DataType::Utf8, false),
+    //         Field::new("state", DataType::Utf8, false),
+    //         Field::new("salary", DataType::Int32, false),
+    //     ]);
+    //
+    //     let plan = LogicalPlanBuilder::scan_csv(
+    //         "employee.csv",
+    //         CsvReadOptions::new().schema(&schema).has_header(true),
+    //         None,
+    //     )
+    //     .and_then(|plan| plan.filter(col("state").eq(lit("CO"))))
+    //     .and_then(|plan| plan.project(vec![col("id")]))
+    //     .and_then(|plan| plan.build())
+    //     .unwrap();
+    //
+    //     let action = &Action::InteractiveQuery {
+    //         plan: plan.clone(),
+    //         settings: HashMap::new(),
+    //         // tables: vec![TableMeta::Csv {
+    //         //     table_name: "employee".to_owned(),
+    //         //     has_header: true,
+    //         //     path: "/foo/bar.csv".to_owned(),
+    //         //     schema: schema.clone(),
+    //         // }],
+    //     };
+    //
+    //     let proto: protobuf::Action = action.try_into()?;
+    //
+    //     let action2: Action = (&proto).try_into()?;
+    //
+    //     assert_eq!(format!("{:?}", action), format!("{:?}", action2));
+    //
+    //     Ok(())
+    // }
 
-        let plan = LogicalPlanBuilder::scan_csv(
-            "employee.csv",
-            CsvReadOptions::new().schema(&schema).has_header(true),
-            None,
-        )
-        .and_then(|plan| plan.filter(col("state").eq(lit("CO"))))
-        .and_then(|plan| plan.project(vec![col("id")]))
-        .and_then(|plan| plan.build())
-        .unwrap();
-
-        let action = &Action::InteractiveQuery {
-            plan: plan.clone(),
-            settings: HashMap::new(),
-            // tables: vec![TableMeta::Csv {
-            //     table_name: "employee".to_owned(),
-            //     has_header: true,
-            //     path: "/foo/bar.csv".to_owned(),
-            //     schema: schema.clone(),
-            // }],
-        };
-
-        let proto: protobuf::Action = action.try_into()?;
-
-        let action2: Action = (&proto).try_into()?;
-
-        assert_eq!(format!("{:?}", action), format!("{:?}", action2));
-
-        Ok(())
-    }
-
-    #[test]
-    fn roundtrip_aggregate() -> Result<()> {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("first_name", DataType::Utf8, false),
-            Field::new("last_name", DataType::Utf8, false),
-            Field::new("state", DataType::Utf8, false),
-            Field::new("salary", DataType::Int32, false),
-        ]);
-
-        let plan = LogicalPlanBuilder::scan_csv(
-            "employee.csv",
-            CsvReadOptions::new().schema(&schema).has_header(true),
-            None,
-        )
-        .and_then(|plan| plan.aggregate(vec![col("state")], vec![max(col("salary"))]))
-        .and_then(|plan| plan.build())
-        .unwrap();
-
-        let action = &Action::InteractiveQuery {
-            plan: plan.clone(),
-            settings: HashMap::new(),
-            // tables: vec![TableMeta::Csv {
-            //     table_name: "employee".to_owned(),
-            //     has_header: true,
-            //     path: "/foo/bar.csv".to_owned(),
-            //     schema: schema.clone(),
-            // }],
-        };
-
-        let proto: protobuf::Action = action.try_into()?;
-
-        let action2: Action = (&proto).try_into()?;
-
-        assert_eq!(format!("{:?}", action), format!("{:?}", action2));
-
-        Ok(())
-    }
-
-    fn max(expr: Expr) -> Expr {
-        Expr::AggregateFunction {
-            name: "MAX".to_owned(),
-            args: vec![expr],
-        }
-    }
+    // #[test]
+    // fn roundtrip_aggregate() -> Result<()> {
+    //     let schema = Schema::new(vec![
+    //         Field::new("id", DataType::Int32, false),
+    //         Field::new("first_name", DataType::Utf8, false),
+    //         Field::new("last_name", DataType::Utf8, false),
+    //         Field::new("state", DataType::Utf8, false),
+    //         Field::new("salary", DataType::Int32, false),
+    //     ]);
+    //
+    //     let plan = LogicalPlanBuilder::scan_csv(
+    //         "employee.csv",
+    //         CsvReadOptions::new().schema(&schema).has_header(true),
+    //         None,
+    //     )
+    //     .and_then(|plan| plan.aggregate(vec![col("state")], vec![max(col("salary"))]))
+    //     .and_then(|plan| plan.build())
+    //     .unwrap();
+    //
+    //     let action = &Action::InteractiveQuery {
+    //         plan: plan.clone(),
+    //         settings: HashMap::new(),
+    //         // tables: vec![TableMeta::Csv {
+    //         //     table_name: "employee".to_owned(),
+    //         //     has_header: true,
+    //         //     path: "/foo/bar.csv".to_owned(),
+    //         //     schema: schema.clone(),
+    //         // }],
+    //     };
+    //
+    //     let proto: protobuf::Action = action.try_into()?;
+    //
+    //     let action2: Action = (&proto).try_into()?;
+    //
+    //     assert_eq!(format!("{:?}", action), format!("{:?}", action2));
+    //
+    //     Ok(())
+    // }
+    //
+    // fn max(expr: Expr) -> Expr {
+    //     Expr::AggregateFunction {
+    //         name: "MAX".to_owned(),
+    //         args: vec![expr],
+    //     }
+    // }
 }
