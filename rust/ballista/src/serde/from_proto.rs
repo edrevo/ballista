@@ -26,7 +26,7 @@ use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::hash_aggregate::{AggregateMode, HashAggregateExec};
 use datafusion::physical_plan::parquet::ParquetExec;
 use datafusion::physical_plan::projection::ProjectionExec;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, PhysicalExpr};
 use datafusion::scalar::ScalarValue;
 
 // use crate::distributed::scheduler::ExecutionTask;
@@ -141,6 +141,14 @@ impl TryInto<LogicalPlan> for &protobuf::LogicalPlanNode {
                 self
             )))
         }
+    }
+}
+
+impl TryInto<(Arc<dyn PhysicalExpr>, String)> for &protobuf::PhysicalExprNode {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<(Arc<dyn PhysicalExpr>, String), Self::Error> {
+        unimplemented!()
     }
 }
 
@@ -348,6 +356,9 @@ impl TryInto<Schema> for &protobuf::Schema {
 pub enum PhysicalPlan {
     Projection(Arc<dyn ExecutionPlan>),
     Filter(Arc<dyn ExecutionPlan>),
+    HashAggregate(Arc<dyn ExecutionPlan>),
+    CsvScan(Arc<dyn ExecutionPlan>),
+    ParquetScan(Arc<dyn ExecutionPlan>),
 }
 
 impl PhysicalPlan {
@@ -355,6 +366,9 @@ impl PhysicalPlan {
         match self {
             PhysicalPlan::Projection(plan) => plan.clone(),
             PhysicalPlan::Filter(plan) => plan.clone(),
+            PhysicalPlan::HashAggregate(plan) => plan.clone(),
+            PhysicalPlan::CsvScan(plan) => plan.clone(),
+            PhysicalPlan::ParquetScan(plan) => plan.clone(),
         }
     }
 }
@@ -367,53 +381,55 @@ impl TryInto<PhysicalPlan> for &protobuf::PhysicalPlanNode {
             let input: PhysicalPlan = convert_box_required!(self.input)?;
             match selection.expr {
                 Some(ref protobuf_expr) => {
-                    let expr: Expr = protobuf_expr.try_into()?;
+                    let (expr, name): (Arc<dyn PhysicalExpr>, String) = protobuf_expr.try_into()?;
                     Ok(PhysicalPlan::Filter(Arc::new(FilterExec::try_new(
-                        Arc::new(expr),
+                        expr,
                         input.plan(),
-                    ))))
+                    )?)))
                 }
                 _ => Err(ballista_error("from_proto: Selection expr missing")),
             }
         } else if let Some(projection) = &self.projection {
-            let input: PhysicalPlan = convert_box_required!(self.input)?;
-            let exprs = projection
-                .expr
-                .iter()
-                .map(|expr| expr.try_into())
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(PhysicalPlan::Projection(Arc::new(ProjectionExec::try_new(
-                &exprs,
-                Arc::new(input),
-            )?)))
+            // let input: PhysicalPlan = convert_box_required!(self.input)?;
+            // let exprs = projection
+            //     .expr
+            //     .iter()
+            //     .map(|expr| expr.try_into())
+            //     .collect::<Result<Vec<_>, _>>()?;
+            // Ok(PhysicalPlan::Projection(Arc::new(ProjectionExec::try_new(
+            //     exprs,
+            //     Arc::new(input),
+            // )?)))
+            unimplemented!()
         } else if let Some(aggregate) = &self.hash_aggregate {
-            let input: PhysicalPlan = convert_box_required!(self.input)?;
-            let mode = match aggregate.mode {
-                mode if mode == protobuf::AggregateMode::Partial as i32 => {
-                    Ok(AggregateMode::Partial)
-                }
-                mode if mode == protobuf::AggregateMode::Final as i32 => Ok(AggregateMode::Final),
-                mode if mode == protobuf::AggregateMode::Complete as i32 => {
-                    Ok(AggregateMode::Complete)
-                }
-                other => Err(ballista_error(&format!(
-                    "Unsupported aggregate mode '{}' for hash aggregate",
-                    other
-                ))),
-            }?;
-            let group_expr = aggregate
-                .group_expr
-                .iter()
-                .map(|expr| expr.try_into())
-                .collect::<Result<Vec<_>, _>>()?;
-            let aggr_expr = aggregate
-                .aggr_expr
-                .iter()
-                .map(|expr| expr.try_into())
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(PhysicalPlan::HashAggregate(Arc::new(
-                HashAggregateExec::try_new(mode, group_expr, aggr_expr, Arc::new(input))?,
-            )))
+            // let input: PhysicalPlan = convert_box_required!(self.input)?;
+            // let mode = match aggregate.mode {
+            //     mode if mode == protobuf::AggregateMode::Partial as i32 => {
+            //         Ok(AggregateMode::Partial)
+            //     }
+            //     mode if mode == protobuf::AggregateMode::Final as i32 => Ok(AggregateMode::Final),
+            //     mode if mode == protobuf::AggregateMode::Complete as i32 => {
+            //         Ok(AggregateMode::Final)
+            //     }
+            //     other => Err(ballista_error(&format!(
+            //         "Unsupported aggregate mode '{}' for hash aggregate",
+            //         other
+            //     ))),
+            // }?;
+            // let group_expr = aggregate
+            //     .group_expr
+            //     .iter()
+            //     .map(|expr| expr.try_into())
+            //     .collect::<Result<Vec<_>, _>>()?;
+            // let aggr_expr = aggregate
+            //     .aggr_expr
+            //     .iter()
+            //     .map(|expr| expr.try_into())
+            //     .collect::<Result<Vec<_>, _>>()?;
+            // Ok(PhysicalPlan::HashAggregate(Arc::new(
+            //     HashAggregateExec::try_new(mode, group_expr, aggr_expr, Arc::new(input))?,
+            // )))
+            unimplemented!()
         } else if let Some(scan) = &self.scan {
             match scan.file_format.as_str() {
                 "csv" => {
