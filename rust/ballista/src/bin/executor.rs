@@ -18,19 +18,20 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
-use ballista::serde::protobuf::{
-    scheduler_grpc_client::SchedulerGrpcClient, RegisterExecutorParams,
-};
-use ballista::BALLISTA_VERSION;
 use ballista::{
     executor::{BallistaExecutor, ExecutorConfig},
-    serde::scheduler::ExecutorMeta,
-};
-use ballista::{
     flight_service::BallistaFlightService,
     scheduler::{standalone::StandaloneClient, SchedulerServer},
-    serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,
+    serde::{
+        protobuf::{
+            scheduler_grpc_client::SchedulerGrpcClient, scheduler_grpc_server::SchedulerGrpcServer,
+            RegisterExecutorParams,
+        },
+        scheduler::ExecutorMeta,
+    },
+    BALLISTA_VERSION,
 };
+use futures::future::MaybeDone;
 use log::info;
 use structopt::StructOpt;
 use tonic::transport::Server;
@@ -97,6 +98,7 @@ async fn main() -> Result<()> {
         opt.scheduler_host
     };
     let scheduler_port = opt.scheduler_port;
+    let scheduler_url = format!("http://{}:{}", scheduler_host, scheduler_port);
 
     let config = ExecutorConfig::new(&external_host, port, opt.concurrent_tasks);
     info!("Running with config: {:?}", config);
@@ -120,30 +122,53 @@ async fn main() -> Result<()> {
             "Ballista v{} Rust Scheduler listening on {:?}",
             BALLISTA_VERSION, addr
         );
-        tokio::spawn(Server::builder().add_service(server).serve(addr));
+        let scheduler_future = tokio::spawn(Server::builder().add_service(server).serve(addr));
+        let mut scheduler_result = futures::future::maybe_done(scheduler_future);
+
+        // Ensure scheduler is ready to receive connections
+        while SchedulerGrpcClient::connect(scheduler_url.clone())
+            .await
+            .is_err()
+        {
+            let scheduler_future = match scheduler_result {
+                MaybeDone::Future(f) => f,
+                MaybeDone::Done(Err(e)) => return Err(e).context("Tokio error"),
+                MaybeDone::Done(Ok(Err(e))) => {
+                    return Err(e).context("Scheduler failed to initialize correctly")
+                }
+                MaybeDone::Done(Ok(Ok(()))) => {
+                    return Err(anyhow::format_err!(
+                        "Scheduler unexpectedly finished successfully"
+                    ))
+                }
+                MaybeDone::Gone => panic!("Received Gone from recently created MaybeDone"),
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            scheduler_result = futures::future::maybe_done(scheduler_future);
+        }
     }
 
-    let mut scheduler =
-        SchedulerGrpcClient::connect(format!("http://{}:{}", scheduler_host, scheduler_port))
-            .await
-            .context("Could not connect to scheduler")?;
-    scheduler
-        .register_executor(RegisterExecutorParams {
-            metadata: Some(executor_meta.into()),
-        })
+    let mut scheduler = SchedulerGrpcClient::connect(scheduler_url)
         .await
-        .context("Could not register executor")?;
-    let executor = Arc::new(BallistaExecutor::new(config, scheduler));
+        .context("Could not connect to scheduler")?;
+    let executor = Arc::new(BallistaExecutor::new(config, scheduler.clone()));
     let service = BallistaFlightService::new(executor);
     let server = FlightServiceServer::new(service);
     info!(
         "Ballista v{} Rust Executor listening on {:?}",
         BALLISTA_VERSION, addr
     );
-    Server::builder()
-        .add_service(server)
-        .serve(addr)
+    let server_future = tokio::spawn(Server::builder().add_service(server).serve(addr));
+    scheduler
+        .register_executor(RegisterExecutorParams {
+            metadata: Some(executor_meta.into()),
+        })
         .await
+        .context("Could not register executor")?;
+
+    server_future
+        .await
+        .context("Tokio error")?
         .context("Could not start executor server")?;
     Ok(())
 }
