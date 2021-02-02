@@ -43,7 +43,7 @@ pub struct BallistaClient {
 impl BallistaClient {
     /// Create a new BallistaClient to connect to the executor listening on the specified
     /// host and port
-    pub async fn try_new(host: &str, port: usize) -> Result<Self> {
+    pub async fn try_new(host: &str, port: u16) -> Result<Self> {
         let addr = format!("http://{}:{}", host, port);
         println!("BallistaClient Connecting to {}", addr);
         let flight_client = FlightServiceClient::connect(addr)

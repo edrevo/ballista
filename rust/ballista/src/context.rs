@@ -20,9 +20,10 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::client::BallistaClient;
+use crate::{client::BallistaClient, serde::protobuf};
 use crate::error::{BallistaError, Result};
 use crate::serde::scheduler::Action;
+use crate::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 
 use arrow::datatypes::SchemaRef;
 use datafusion::dataframe::DataFrame;
@@ -35,15 +36,10 @@ use datafusion::physical_plan::csv::CsvReadOptions;
 use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
 use log::{debug, info};
 
-#[derive(Debug)]
-pub enum ClusterMeta {
-    Direct { host: String, port: usize }, //TODO add etcd and k8s options here
-}
-
 #[allow(dead_code)]
 pub struct BallistaContextState {
-    /// Meta-data required for connecting to a scheduler instances in the cluster
-    cluster_meta: ClusterMeta,
+    /// Hostname/IP to connect to cluster's scheduler
+    scheduler_url: String,
     /// Tables that have been registered with this context
     tables: HashMap<String, LogicalPlan>,
     /// General purpose settings
@@ -51,9 +47,10 @@ pub struct BallistaContextState {
 }
 
 impl BallistaContextState {
-    pub fn new(cluster_meta: ClusterMeta, settings: HashMap<String, String>) -> Self {
+    pub fn new(host: &str, port: u16, settings: HashMap<String, String>) -> Self {
+        let scheduler_url = format!("http://{}:{}", host, port);
         Self {
-            cluster_meta,
+            scheduler_url,
             tables: HashMap::new(),
             settings,
         }
@@ -67,12 +64,8 @@ pub struct BallistaContext {
 
 impl BallistaContext {
     /// Create a context for executing queries against a remote Ballista executor instance
-    pub fn remote(host: &str, port: usize, settings: HashMap<String, String>) -> Self {
-        let meta = ClusterMeta::Direct {
-            host: host.to_owned(),
-            port,
-        };
-        let state = BallistaContextState::new(meta, settings);
+    pub fn remote(host: &str, port: u16, settings: HashMap<String, String>) -> Self {
+        let state = BallistaContextState::new(host, port, settings);
         Self {
             state: Arc::new(Mutex::new(state)),
         }
@@ -197,14 +190,9 @@ impl BallistaDataFrame {
     }
 
     pub async fn collect(&self) -> Result<SendableRecordBatchStream> {
-        let (host, port) = {
-            let state = self.state.lock().unwrap();
-            match &state.cluster_meta {
-                ClusterMeta::Direct { host, port, .. } => (host.to_owned(), *port),
-            }
-        };
-        info!("Connecting to Ballista executor at {}:{}", host, port);
-        let mut client = BallistaClient::try_new(&host, port).await?;
+        let scheduler_url = self.state.lock().unwrap().scheduler_url.to_owned();
+        info!("Connecting to Ballista scheduler at {}", scheduler_url);
+        let mut client = SchedulerGrpcClient::connect(scheduler_url).await?;
         let plan = self.df.to_logical_plan();
 
         debug!("Sending logical plan to executor: {:?}", plan);
