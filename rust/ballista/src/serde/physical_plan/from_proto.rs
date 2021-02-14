@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::{convert::TryInto, unimplemented};
 
 use crate::error::BallistaError;
-use crate::executor::shuffle_reader::ShuffleReaderExec;
+use crate::scheduler::execution_plans::ShuffleReaderExec;
 use crate::scheduler::planner::PartitionLocation;
 use crate::serde::protobuf::LogicalExprNode;
 use crate::serde::{proto_error, protobuf};

@@ -51,7 +51,7 @@ use datafusion::physical_plan::{AggregateExpr, ExecutionPlan, PhysicalExpr};
 use datafusion::physical_plan::hash_aggregate::HashAggregateExec;
 use protobuf::physical_plan_node::PhysicalPlanType;
 
-use crate::executor::shuffle_reader::ShuffleReaderExec;
+use crate::scheduler::execution_plans::ShuffleReaderExec;
 use crate::serde::{protobuf, BallistaError};
 use datafusion::physical_plan::functions::ScalarFunctionExpr;
 

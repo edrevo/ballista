@@ -14,12 +14,12 @@
 
 //! Support for distributed schedulers, such as Kubernetes
 
+pub mod execution_plans;
 pub mod planner;
 pub mod state;
 
 use std::convert::TryInto;
 
-use crate::executor::shuffle_reader::ShuffleReaderExec;
 use crate::serde::protobuf::{
     job_status, scheduler_grpc_server::SchedulerGrpc, CompletedJob, ExecuteQueryParams,
     ExecuteQueryResult, ExecutorMetadata, FailedJob, GetExecutorMetadataParams,
@@ -29,6 +29,7 @@ use crate::serde::protobuf::{
 use crate::serde::scheduler::ExecutorMeta;
 use crate::{client::BallistaClient, error::Result, serde::scheduler::Action};
 use crate::{prelude::BallistaError, scheduler::planner::DistributedPlanner};
+use execution_plans::ShuffleReaderExec;
 
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::execution::context::ExecutionContext;
