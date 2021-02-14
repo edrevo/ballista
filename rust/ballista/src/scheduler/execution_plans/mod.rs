@@ -7,4 +7,4 @@ mod unresolved_shuffle;
 
 pub use query_stage::QueryStageExec;
 pub use shuffle_reader::ShuffleReaderExec;
-pub use unresolved_shuffle::UnresovledShuffleExec;
+pub use unresolved_shuffle::UnresolvedShuffleExec;

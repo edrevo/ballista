@@ -20,7 +20,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::{collections::HashMap, future::Future};
 
-use super::execution_plans::{self, QueryStageExec, ShuffleReaderExec, UnresovledShuffleExec};
+use super::execution_plans::{self, QueryStageExec, ShuffleReaderExec, UnresolvedShuffleExec};
 use crate::client::BallistaClient;
 use crate::context::DFTableAdapter;
 use crate::error::{BallistaError, Result};
@@ -94,7 +94,7 @@ impl DistributedPlanner {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let job_uuid = Uuid::new_v4();
 
-        let execution_plans = self.calculate_query_stages(&job_uuid, execution_plan)?;
+        let execution_plans = self.plan_query_stages(&job_uuid, execution_plan)?;
 
         for plan in &execution_plans {
             pretty_print(plan.clone(), 0);
@@ -104,17 +104,17 @@ impl DistributedPlanner {
     }
 
     /// Returns a vector of ExecutionPlans, where the root node is a [QueryStageExec].
-    /// Plans that depend on the input of other plans will have leaf nodes of type [UnresovledShuffleExec].
+    /// Plans that depend on the input of other plans will have leaf nodes of type [UnresolvedShuffleExec].
     /// A [QueryStageExec] is created whenever the partitioning changes.
     ///
     /// Returns an empty vector if the execution_plan doesn't need to be sliced into several stages.
-    pub fn calculate_query_stages(
+    pub fn plan_query_stages(
         &mut self,
         job_uuid: &Uuid,
         execution_plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Vec<Arc<QueryStageExec>>> {
         let (new_plan, mut stages) =
-            self.calculate_query_stages_internal(job_uuid, execution_plan)?;
+            self.plan_query_stages_internal(job_uuid, execution_plan)?;
         stages.push(create_query_stage(
             job_uuid,
             self.next_stage_id(),
@@ -126,7 +126,7 @@ impl DistributedPlanner {
     /// Returns a potentially modified version of the input execution_plan along with the resulting query stages.
     /// This function is needed because the input execution_plan might need to be modified, but it might not hold a
     /// compelte query stage (its parent might also belong to the same stage)
-    fn calculate_query_stages_internal(
+    fn plan_query_stages_internal(
         &mut self,
         job_uuid: &Uuid,
         execution_plan: Arc<dyn ExecutionPlan>,
@@ -140,10 +140,10 @@ impl DistributedPlanner {
         let mut children = vec![];
         for child in execution_plan.children() {
             let (new_child, mut child_stages) =
-                self.calculate_query_stages_internal(&job_uuid, child)?;
+                self.plan_query_stages_internal(&job_uuid, child)?;
             match child_stages.as_slice() {
                 [] => children.push(new_child),
-                stages => children.push(Arc::new(UnresovledShuffleExec::new(
+                stages => children.push(Arc::new(UnresolvedShuffleExec::new(
                     stages.iter().map(|q| q.stage_id).collect(),
                     new_child.schema().clone(),
                     new_child.output_partitioning().partition_count(),
@@ -166,7 +166,7 @@ impl DistributedPlanner {
                     for child in &children {
                         let new_stage =
                             create_query_stage(job_uuid, self.next_stage_id(), child.clone())?;
-                        new_children.push(Arc::new(UnresovledShuffleExec::new(
+                        new_children.push(Arc::new(UnresolvedShuffleExec::new(
                             vec![new_stage.stage_id],
                             new_stage.schema().clone(),
                             new_stage.output_partitioning().partition_count(),
@@ -188,7 +188,7 @@ impl DistributedPlanner {
                 for child in &children {
                     let new_stage =
                         create_query_stage(job_uuid, self.next_stage_id(), child.clone())?;
-                    new_children.push(Arc::new(UnresovledShuffleExec::new(
+                    new_children.push(Arc::new(UnresolvedShuffleExec::new(
                         vec![new_stage.stage_id],
                         new_stage.schema().clone(),
                         new_stage.output_partitioning().partition_count(),
@@ -244,7 +244,7 @@ fn remove_unresolved_shuffles(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut new_children: Vec<Arc<dyn ExecutionPlan>> = vec![];
     for child in stage.children() {
-        if let Some(unresolved_shuffle) = child.as_any().downcast_ref::<UnresovledShuffleExec>() {
+        if let Some(unresolved_shuffle) = child.as_any().downcast_ref::<UnresolvedShuffleExec>() {
             let relevant_locations: Vec<_> = unresolved_shuffle
                 .query_stage_ids
                 .iter()

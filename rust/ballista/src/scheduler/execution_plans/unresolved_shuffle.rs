@@ -16,10 +16,10 @@ use log::info;
 
 /// UnresolvedShuffleExec represents a dependency on the results of several QueryStageExec nodes which haven't been computed yet.
 ///
-/// An ExecutionPlan that contains an UnresovledShuffleExec isn't ready for execution. The presence of this ExecutionPlan
+/// An ExecutionPlan that contains an UnresolvedShuffleExec isn't ready for execution. The presence of this ExecutionPlan
 /// is used as a signal so the scheduler knows it can't start computation on a specific QueryStageExec.
 #[derive(Debug, Clone)]
-pub struct UnresovledShuffleExec {
+pub struct UnresolvedShuffleExec {
     // The query stage ids which needs to be computed
     pub(crate) query_stage_ids: Vec<usize>,
 
@@ -30,8 +30,8 @@ pub struct UnresovledShuffleExec {
     pub(crate) partition_count: usize,
 }
 
-impl UnresovledShuffleExec {
-    /// Create a new UnresovledShuffleExec
+impl UnresolvedShuffleExec {
+    /// Create a new UnresolvedShuffleExec
     pub fn new(query_stage_ids: Vec<usize>, schema: SchemaRef, partition_count: usize) -> Self {
         Self {
             query_stage_ids,
@@ -42,7 +42,7 @@ impl UnresovledShuffleExec {
 }
 
 #[async_trait]
-impl ExecutionPlan for UnresovledShuffleExec {
+impl ExecutionPlan for UnresolvedShuffleExec {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -64,7 +64,7 @@ impl ExecutionPlan for UnresovledShuffleExec {
         _children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Err(DataFusionError::Plan(
-            "Ballista UnresovledShuffleExec does not support with_new_children()".to_owned(),
+            "Ballista UnresolvedShuffleExec does not support with_new_children()".to_owned(),
         ))
     }
 
@@ -73,7 +73,7 @@ impl ExecutionPlan for UnresovledShuffleExec {
         _partition: usize,
     ) -> Result<Pin<Box<dyn RecordBatchStream + Send + Sync>>> {
         Err(DataFusionError::Plan(
-            "Ballista UnresovledShuffleExec does not support execution".to_owned(),
+            "Ballista UnresolvedShuffleExec does not support execution".to_owned(),
         ))
     }
 }
