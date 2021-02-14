@@ -55,7 +55,7 @@ pub struct DistributedPlanner {
 }
 
 impl DistributedPlanner {
-    pub fn new(executors: Vec<ExecutorMeta>) -> Result<Self> {
+    pub fn try_new(executors: Vec<ExecutorMeta>) -> Result<Self> {
         if executors.is_empty() {
             Err(BallistaError::General(
                 "DistributedPlanner requires at least one executor".to_owned(),
@@ -113,8 +113,7 @@ impl DistributedPlanner {
         job_uuid: &Uuid,
         execution_plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Vec<Arc<QueryStageExec>>> {
-        let (new_plan, mut stages) =
-            self.plan_query_stages_internal(job_uuid, execution_plan)?;
+        let (new_plan, mut stages) = self.plan_query_stages_internal(job_uuid, execution_plan)?;
         stages.push(create_query_stage(
             job_uuid,
             self.next_stage_id(),
@@ -140,23 +139,18 @@ impl DistributedPlanner {
         let mut children = vec![];
         for child in execution_plan.children() {
             let (new_child, mut child_stages) =
-                self.plan_query_stages_internal(&job_uuid, child)?;
-            match child_stages.as_slice() {
-                [] => children.push(new_child),
-                stages => children.push(Arc::new(UnresolvedShuffleExec::new(
-                    stages.iter().map(|q| q.stage_id).collect(),
-                    new_child.schema().clone(),
-                    new_child.output_partitioning().partition_count(),
-                ))),
-            }
+                self.plan_query_stages_internal(&job_uuid, child.clone())?;
+            children.push(new_child);
             stages.append(&mut child_stages);
         }
 
         if let Some(adapter) = execution_plan.as_any().downcast_ref::<DFTableAdapter>() {
             let ctx = ExecutionContext::new();
             Ok((ctx.create_physical_plan(&adapter.logical_plan)?, stages))
-        } else if execution_plan.as_any().is::<MergeExec>() {
-            Ok((children[0].clone(), stages))
+        } else if let Some(merge) = execution_plan.as_any().downcast_ref::<MergeExec>() {
+            let query_stage =
+                create_query_stage(job_uuid, self.next_stage_id(), merge.children()[0].clone())?;
+            Ok((merge.with_new_children(vec![query_stage])?, stages))
         } else if let Some(agg) = execution_plan.as_any().downcast_ref::<HashAggregateExec>() {
             //TODO should insert query stages in more generic way based on partitioning metadata
             // and not specifically for this operator
@@ -311,7 +305,25 @@ async fn execute_query_stage(
                 .await
         }));
     }
-    futures::future::join_all(executions).await;
+
+    // wait for all partitions to complete
+    let results = futures::future::join_all(executions).await;
+
+    // check for errors
+    for result in results {
+        match result {
+            Ok(partition_result) => {
+                let final_result = partition_result?;
+                debug!("Query stage partition result: {:?}", final_result);
+            }
+            Err(e) => {
+                return Err(BallistaError::General(format!(
+                    "Query stage {} failed: {:?}",
+                    stage_id, e
+                )))
+            }
+        }
+    }
 
     debug!(
         "execute_query_stage() stage_id={} produced {:?}",
@@ -327,4 +339,103 @@ pub fn pretty_print(plan: Arc<dyn ExecutionPlan>, indent: usize) {
     plan.children()
         .iter()
         .for_each(|c| pretty_print(c.clone(), indent + 1));
+}
+
+#[cfg(test)]
+mod test {
+    use crate::scheduler::execution_plans::QueryStageExec;
+    use crate::scheduler::planner::{pretty_print, DistributedPlanner};
+    use crate::serde::protobuf;
+    use crate::serde::scheduler::ExecutorMeta;
+    use crate::test_utils;
+    use crate::test_utils::{datafusion_test_context, TPCH_TABLES};
+    use crate::{error::BallistaError, scheduler::execution_plans::UnresolvedShuffleExec};
+    use arrow::datatypes::DataType;
+    use datafusion::execution::context::ExecutionContext;
+    use datafusion::physical_plan::csv::CsvReadOptions;
+    use datafusion::physical_plan::hash_aggregate::HashAggregateExec;
+    use datafusion::physical_plan::projection::ProjectionExec;
+    use datafusion::physical_plan::sort::SortExec;
+    use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::prelude::*;
+    use std::convert::TryInto;
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    macro_rules! downcast_exec {
+        ($exec: expr, $ty: ty) => {
+            $exec.as_any().downcast_ref::<$ty>().unwrap()
+        };
+    }
+
+    #[test]
+    fn test() -> Result<(), BallistaError> {
+        let mut ctx = datafusion_test_context("testdata")?;
+
+        // simplified form of TPC-H query 1
+        let df = ctx.sql(
+            "select l_returnflag, sum(l_extendedprice * 1) as sum_disc_price
+            from lineitem
+            group by l_returnflag
+            order by l_returnflag",
+        )?;
+
+        let plan = df.to_logical_plan();
+        let plan = ctx.optimize(&plan)?;
+        let plan = ctx.create_physical_plan(&plan)?;
+
+        let mut planner = DistributedPlanner::try_new(vec![ExecutorMeta {
+            id: "".to_string(),
+            host: "".to_string(),
+            port: 0,
+        }])?;
+        let job_uuid = Uuid::new_v4();
+        let stages = planner.plan_query_stages(&job_uuid, plan)?;
+
+        /* EXPECTED
+        "QueryStageExec  { job_uuid: 1ccbedba-0aed-4a6f-90cd-1bbb9e972"
+          "SortExec { input: ProjectionExec { expr: [(Column { name: \"l"
+            "ProjectionExec { expr: [(Column { name: \"l_returnflag\" }, \"l"
+              "HashAggregateExec { mode: Final, group_expr: [(Column { name"
+                "UnresolvedShuffleExec { query_stage_ids: Vec(1)"
+        "QueryStageExec { job_uuid: 1ccbedba-0aed-4a6f-90cd-1bbb9e972"
+          "HashAggregateExec { mode: Partial, group_expr: [(Column { na"
+            "CsvExec { path: \"testdata/lineitem.tbl\", filenames: [\"testda"
+        */
+        
+        let sort = stages[1].children()[0].clone();
+        let sort = downcast_exec!(sort, SortExec);
+
+        let projection = sort.children()[0].clone();
+        println!("{:?}", projection);
+        let projection = downcast_exec!(projection, ProjectionExec);
+
+        let final_hash = projection.children()[0].clone();
+        let final_hash = downcast_exec!(final_hash, HashAggregateExec);
+
+        let unresolved_shuffle = final_hash.children()[0].clone();
+        let unresolved_shuffle = downcast_exec!(unresolved_shuffle, UnresolvedShuffleExec);
+        assert_eq!(unresolved_shuffle.query_stage_ids, vec![1]);
+
+        let partial_hash = stages[0].children()[0].clone();
+        let partial_hash_serde = roundtrip_operator(partial_hash.clone())?;
+
+        let partial_hash = downcast_exec!(partial_hash, HashAggregateExec);
+        let partial_hash_serde = downcast_exec!(partial_hash_serde, HashAggregateExec);
+
+        assert_eq!(
+            format!("{:?}", partial_hash),
+            format!("{:?}", partial_hash_serde)
+        );
+
+        Ok(())
+    }
+
+    fn roundtrip_operator(
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
+        let proto: protobuf::PhysicalPlanNode = plan.clone().try_into()?;
+        let result_exec_plan: Arc<dyn ExecutionPlan> = (&proto).try_into()?;
+        Ok(result_exec_plan)
+    }
 }
