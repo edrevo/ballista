@@ -358,13 +358,13 @@ mod test {
     use crate::utils::format_plan;
     use crate::{error::BallistaError, scheduler::execution_plans::UnresolvedShuffleExec};
     use arrow::datatypes::DataType;
-    use datafusion::{execution::context::ExecutionContext, physical_plan::merge::MergeExec};
     use datafusion::physical_plan::csv::CsvReadOptions;
     use datafusion::physical_plan::hash_aggregate::HashAggregateExec;
     use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::physical_plan::sort::SortExec;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::prelude::*;
+    use datafusion::{execution::context::ExecutionContext, physical_plan::merge::MergeExec};
     use std::convert::TryInto;
     use std::sync::Arc;
     use uuid::Uuid;
