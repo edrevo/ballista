@@ -43,12 +43,15 @@ use datafusion::error::DataFusionError;
 use datafusion::physical_plan::RecordBatchStream;
 use futures::{Stream, StreamExt};
 use log::{debug, info, warn};
-use tokio_stream::wrappers::ReceiverStream;
 use std::collections::HashMap;
 use std::io::{Read, Seek};
-use tokio::{sync::mpsc::{Receiver, Sender}, task};
-use tokio::task::JoinHandle;
 use tokio::sync::mpsc::channel;
+use tokio::task::JoinHandle;
+use tokio::{
+    sync::mpsc::{Receiver, Sender},
+    task,
+};
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
 type FlightDataSender = Sender<Result<FlightData, Status>>;
