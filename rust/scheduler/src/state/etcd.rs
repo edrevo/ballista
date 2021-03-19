@@ -19,8 +19,9 @@ use std::time::Duration;
 use crate::state::ConfigBackendClient;
 use ballista_core::error::{ballista_error, Result};
 
-use etcd_client::{GetOptions, LockResponse, PutOptions};
-use log::warn;
+use etcd_client::{GetOptions, LockResponse};
+use log::{error, warn};
+use rand::{Rng, distributions::Alphanumeric, thread_rng};
 
 use super::Lock;
 
@@ -28,11 +29,19 @@ use super::Lock;
 #[derive(Clone)]
 pub struct EtcdClient {
     etcd: etcd_client::Client,
+    id: Vec<u8>
 }
 
 impl EtcdClient {
     pub fn new(etcd: etcd_client::Client) -> Self {
-        Self { etcd }
+        let id: Vec<u8> = {
+            let mut rng = thread_rng();
+            std::iter::repeat(())
+                .map(|()| rng.sample(Alphanumeric))
+                .take(7)
+                .collect()
+        };
+        Self { etcd, id }
     }
 }
 
@@ -64,20 +73,9 @@ impl ConfigBackendClient for EtcdClient {
             .collect())
     }
 
-    async fn put(&self, key: String, value: Vec<u8>, lease_time: Option<Duration>) -> Result<()> {
+    async fn put(&self, key: String, value: Vec<u8>) -> Result<()> {
         let mut etcd = self.etcd.clone();
-        let put_options = if let Some(lease_time) = lease_time {
-            etcd.lease_grant(lease_time.as_secs() as i64, None)
-                .await
-                .map(|lease| Some(PutOptions::new().with_lease(lease.id())))
-                .map_err(|e| {
-                    warn!("etcd lease grant failed: {:?}", e.to_string());
-                    ballista_error("etcd lease grant failed")
-                })?
-        } else {
-            None
-        };
-        etcd.put(key.clone(), value.clone(), put_options)
+        etcd.put(key.clone(), value.clone(), None)
             .await
             .map_err(|e| {
                 warn!("etcd put failed: {}", e);
@@ -88,6 +86,7 @@ impl ConfigBackendClient for EtcdClient {
 
     async fn lock(&self) -> Result<Box<dyn Lock>> {
         let mut etcd = self.etcd.clone();
+        // TODO: make this a namespaced-lock
         let lock = etcd
             .lock("/ballista_global_lock", None)
             .await
@@ -96,6 +95,44 @@ impl ConfigBackendClient for EtcdClient {
                 ballista_error("etcd lock failed")
             })?;
         Ok(Box::new(EtcdLockGuard { etcd, lock }))
+    }
+
+    async fn leader(&self, campaign_name: &str) {
+        let mut etcd = self.etcd.clone();
+        let lease = match etcd.lease_grant(60, Default::default()).await {
+            Err(e) => {
+                error!("Error received while requesting etcd lease. This scheduler will never act as a leader. Error: {}", e);
+                return;
+            }
+            Ok(lease) => lease,
+        };
+        loop {
+            if let Err(e) = etcd
+                .campaign(campaign_name, self.id.clone(), lease.id())
+                .await
+            {
+                warn!("Campaign failed: {}", e);
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                continue;
+            }
+
+            loop {
+                tokio::time::sleep(Duration::from_secs(45)).await;
+                if let Err(e) = etcd.lease_keep_alive(lease.id()).await {
+                    warn!("Lease keep alive failed. Going back to campaign mode. Error: {}", e);
+                    break;
+                }
+            }
+        }
+    }
+
+    async fn is_leader(&self, campaign_name: &str) -> Result<bool> {
+        let mut etcd = self.etcd.clone();
+        let leader_response = etcd.leader(campaign_name).await.map_err(|e| {
+            warn!("etcd leader query failed: {}", e);
+            ballista_error("etcd leader query failed")
+        })?;
+        Ok(leader_response.kv().map(|kv| kv.value() == self.id).unwrap_or(false))
     }
 }
 

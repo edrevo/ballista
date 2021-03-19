@@ -10,17 +10,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{any::type_name, collections::HashMap, convert::TryInto, sync::Arc, time::Duration};
+use std::{any::type_name, collections::HashMap, convert::TryInto, sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
 
 use datafusion::physical_plan::ExecutionPlan;
 use log::{debug, info};
 use prost::Message;
 use tokio::sync::OwnedMutexGuard;
 
-use ballista_core::serde::protobuf::{
-    job_status, task_status, CompletedJob, CompletedTask, ExecutorMetadata, FailedJob, FailedTask,
-    JobStatus, PhysicalPlanNode, RunningJob, RunningTask, TaskStatus,
-};
+use ballista_core::serde::protobuf::{CompletedJob, CompletedTask, ExecutorHeartbeat, ExecutorMetadata, FailedJob, FailedTask, JobStatus, PhysicalPlanNode, RunningJob, RunningTask, TaskStatus, job_status, task_status};
 use ballista_core::serde::scheduler::PartitionStats;
 use ballista_core::{error::BallistaError, serde::scheduler::ExecutorMeta};
 use ballista_core::{
@@ -39,8 +36,6 @@ pub use etcd::EtcdClient;
 #[cfg(feature = "sled")]
 pub use standalone::StandaloneClient;
 
-const LEASE_TIME: Duration = Duration::from_secs(60);
-
 /// A trait that contains the necessary methods to save and retrieve the state and configuration of a cluster.
 #[tonic::async_trait]
 pub trait ConfigBackendClient: Send + Sync {
@@ -53,9 +48,13 @@ pub trait ConfigBackendClient: Send + Sync {
     async fn get_from_prefix(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>>;
 
     /// Saves the value into the provided key, overriding any previous data that might have been associated to that key.
-    async fn put(&self, key: String, value: Vec<u8>, lease_time: Option<Duration>) -> Result<()>;
+    async fn put(&self, key: String, value: Vec<u8>) -> Result<()>;
 
     async fn lock(&self) -> Result<Box<dyn Lock>>;
+
+    async fn leader(&self, campaign_name: &str);
+
+    async fn is_leader(&self, campaign_name: &str) -> Result<bool>;
 }
 
 #[derive(Clone)]
@@ -68,25 +67,43 @@ impl SchedulerState {
         Self { config_client }
     }
 
-    pub async fn get_executors_metadata(&self, namespace: &str) -> Result<Vec<ExecutorMeta>> {
+    pub async fn get_executors_metadata(&self, namespace: &str) -> Result<Vec<(ExecutorMeta, Duration)>> {
         let mut result = vec![];
 
         let entries = self
             .config_client
             .get_from_prefix(&get_executors_prefix(namespace))
             .await?;
+        let now_epoch_ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards");
         for (_key, entry) in entries {
-            let meta: ExecutorMetadata = decode_protobuf(&entry)?;
-            result.push(meta.into());
+            let heartbeat: ExecutorHeartbeat = decode_protobuf(&entry)?;
+            let meta = heartbeat.meta.unwrap();
+            let ts = Duration::from_secs(heartbeat.timestamp);
+            let time_since_last_seen = now_epoch_ts.checked_sub(ts).unwrap_or_else(|| Duration::from_secs(0));
+            result.push((meta.into(), time_since_last_seen));
         }
         Ok(result)
+    }
+
+    pub async fn get_alive_executors_metadata(&self, namespace: &str, last_seen_threshold: Duration) -> Result<Vec<ExecutorMeta>> {
+        unimplemented!()
     }
 
     pub async fn save_executor_metadata(&self, namespace: &str, meta: ExecutorMeta) -> Result<()> {
         let key = get_executor_key(namespace, &meta.id);
         let meta: ExecutorMetadata = meta.into();
-        let value: Vec<u8> = encode_protobuf(&meta)?;
-        self.config_client.put(key, value, Some(LEASE_TIME)).await
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        let heartbeat = ExecutorHeartbeat {
+            meta: Some(meta),
+            timestamp
+        };
+        let value: Vec<u8> = encode_protobuf(&heartbeat)?;
+        self.config_client.put(key, value).await
     }
 
     pub async fn save_job_metadata(
@@ -98,7 +115,7 @@ impl SchedulerState {
         debug!("Saving job metadata: {:?}", status);
         let key = get_job_key(namespace, job_id);
         let value = encode_protobuf(status)?;
-        self.config_client.put(key, value, None).await
+        self.config_client.put(key, value).await
     }
 
     pub async fn get_job_metadata(&self, namespace: &str, job_id: &str) -> Result<JobStatus> {
@@ -123,7 +140,7 @@ impl SchedulerState {
             partition_id.partition_id as usize,
         );
         let value = encode_protobuf(status)?;
-        self.config_client.put(key, value, None).await
+        self.config_client.put(key, value).await
     }
 
     pub async fn _get_task_status(
@@ -158,7 +175,7 @@ impl SchedulerState {
             let proto: PhysicalPlanNode = plan.try_into()?;
             encode_protobuf(&proto)?
         };
-        self.config_client.clone().put(key, value, None).await
+        self.config_client.clone().put(key, value).await
     }
 
     pub async fn get_stage_plan(
@@ -234,6 +251,8 @@ impl SchedulerState {
                                             },
                                         executor_meta: executors
                                             .iter()
+                                            // TODO: we should only retrieve executors that are alive, and if we don't find them here we should reset the missing partitions to runnable so they get picked up by someone else
+                                            .map(|(exec, _)| exec)
                                             .find(|exec| exec.id == executor_id)
                                             .unwrap()
                                             .clone(),
@@ -273,7 +292,7 @@ impl SchedulerState {
             .get_executors_metadata(namespace)
             .await?
             .into_iter()
-            .map(|meta| (meta.id.to_string(), meta))
+            .map(|(meta, _)| (meta.id.to_string(), meta))
             .collect();
         for (key, value) in kvs {
             let job_id = extract_job_id_from_key(&key)?;
@@ -468,7 +487,7 @@ mod test {
             port: 123,
         };
         state.save_executor_metadata("test", meta.clone()).await?;
-        let result = state.get_executors_metadata("test").await?;
+        let result: Vec<_> = state.get_executors_metadata("test").await?.into_iter().map(|(meta, _)| meta).collect();
         assert_eq!(vec![meta], result);
         Ok(())
     }

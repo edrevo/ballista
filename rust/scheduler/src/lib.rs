@@ -20,14 +20,13 @@ pub mod state;
 #[cfg(test)]
 pub mod test_utils;
 
-use std::fmt;
+use std::{fmt, time::Duration};
 use std::{convert::TryInto, sync::Arc};
 
 use ballista_core::serde::protobuf::{
     execute_query_params::Query, job_status, scheduler_grpc_server::SchedulerGrpc,
     ExecuteQueryParams, ExecuteQueryResult, FailedJob, FilePartitionMetadata, FileType,
-    GetExecutorMetadataParams, GetExecutorMetadataResult, GetFileMetadataParams,
-    GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult, JobStatus, PartitionId,
+    GetFileMetadataParams, GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult, JobStatus, PartitionId,
     PollWorkParams, PollWorkResult, QueuedJob, RunningJob, TaskDefinition, TaskStatus,
 };
 use ballista_core::serde::scheduler::ExecutorMeta;
@@ -64,6 +63,9 @@ use self::state::{ConfigBackendClient, SchedulerState};
 use datafusion::physical_plan::parquet::ParquetExec;
 use std::time::Instant;
 
+// TODO: Make this configurable
+const EXECUTOR_LIVENESS_THRESHOLD: Duration = Duration::from_secs(60);
+
 pub struct SchedulerServer {
     state: SchedulerState,
     namespace: String,
@@ -80,28 +82,6 @@ impl SchedulerServer {
 
 #[tonic::async_trait]
 impl SchedulerGrpc for SchedulerServer {
-    async fn get_executors_metadata(
-        &self,
-        _request: Request<GetExecutorMetadataParams>,
-    ) -> std::result::Result<Response<GetExecutorMetadataResult>, tonic::Status> {
-        info!("Received get_executors_metadata request");
-        let result = self
-            .state
-            .get_executors_metadata(self.namespace.as_str())
-            .await
-            .map_err(|e| {
-                let msg = format!("Error reading executors metadata: {}", e);
-                error!("{}", msg);
-                tonic::Status::internal(msg)
-            })?
-            .into_iter()
-            .map(|meta| meta.into())
-            .collect();
-        Ok(Response::new(GetExecutorMetadataResult {
-            metadata: result,
-        }))
-    }
-
     async fn poll_work(
         &self,
         request: Request<PollWorkParams>,
@@ -256,7 +236,16 @@ impl SchedulerGrpc for SchedulerServer {
                     let msg = format!("Error reading executors metadata: {}", e);
                     error!("{}", msg);
                     tonic::Status::internal(msg)
-                })?;
+                })?
+                .into_iter()
+                .filter_map(|(meta, last_seen)| {
+                    if last_seen.ge(&EXECUTOR_LIVENESS_THRESHOLD) {
+                        None
+                    } else {
+                        Some(meta)
+                    }
+                })
+                .collect();
             debug!("Found executors: {:?}", executors);
 
             let job_id: String = {

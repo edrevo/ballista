@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use crate::state::ConfigBackendClient;
 use ballista_core::error::{ballista_error, BallistaError, Result};
@@ -84,8 +84,7 @@ impl ConfigBackendClient for StandaloneClient {
             .map_err(|e| ballista_error(&format!("sled error {:?}", e)))?)
     }
 
-    // TODO: support lease_time. See https://github.com/spacejam/sled/issues/1119 for how to approach this
-    async fn put(&self, key: String, value: Vec<u8>, _lease_time: Option<Duration>) -> Result<()> {
+    async fn put(&self, key: String, value: Vec<u8>) -> Result<()> {
         self.db
             .insert(key, value)
             .map_err(|e| {
@@ -97,6 +96,12 @@ impl ConfigBackendClient for StandaloneClient {
 
     async fn lock(&self) -> Result<Box<dyn Lock>> {
         Ok(Box::new(self.lock.clone().lock_owned().await))
+    }
+
+    async fn leader(&self, _campaign_name: &str) {}
+
+    async fn is_leader(&self, _campaign_name: &str) -> Result<bool> {
+        Ok(true)
     }
 }
 
@@ -116,7 +121,7 @@ mod tests {
         let client = create_instance()?;
         let key = "key";
         let value = "value".as_bytes();
-        client.put(key.to_owned(), value.to_vec(), None).await?;
+        client.put(key.to_owned(), value.to_vec()).await?;
         assert_eq!(client.get(key).await?, value);
         Ok(())
     }
@@ -136,10 +141,10 @@ mod tests {
         let key = "key";
         let value = "value".as_bytes();
         client
-            .put(format!("{}/1", key), value.to_vec(), None)
+            .put(format!("{}/1", key), value.to_vec())
             .await?;
         client
-            .put(format!("{}/2", key), value.to_vec(), None)
+            .put(format!("{}/2", key), value.to_vec())
             .await?;
         assert_eq!(
             client.get_from_prefix(key).await?,
